@@ -91,57 +91,70 @@ async function login(
   csrfmiddlewaretoken: string,
   username: string,
   password: string,
-) {
+): Promise<string> {
   const form_params = new URLSearchParams({
-    csrfmiddlewaretoken: csrfmiddlewaretoken,
+    csrfmiddlewaretoken,
     next: "/",
-    password: password,
-    username: username,
+    password,
+    username,
   });
 
   logger.info(`Logging in as: ${username}`);
   logger.debug(`Fetching: ${LOGIN_URL}`);
-  const response = await fetch(LOGIN_URL, {
-    body: form_params,
-    method: "POST",
-    headers: HEADERS,
-  });
+
+  // ── 60-second timeout ────────────────────────────────────────────────
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60_000);
+  // ─────────────────────────────────────────────────────────────────────
+
+  let response: Response;
+  try {
+    response = await fetch(LOGIN_URL, {
+      body: form_params,
+      method: "POST",
+      headers: HEADERS,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId); // always clear the timer
+  }
+
   if (!response.ok) {
     throw new Error(`Unexpected response ${response.statusText}`);
   }
+
   const body = await response.text();
-  const $ = await cheerio.load(body);
+  const $ = cheerio.load(body);
 
   // Check to see if we have a sessionid (logged in)
   const cookies = cookieJar.getCookiesSync(BASE_URL);
-  const session_cookie = cookies.find((cookie) => {
-    return cookie.key == "sessionid";
-  });
+  const session_cookie = cookies.find((cookie) => cookie.key === "sessionid");
   if (!session_cookie) {
-    logger.error(`Unable to log in as ${username}, verify your credentials...`);
-    throw new Error(
-      `Unable to log in as ${username}, verify your credentials...`,
-    );
+    logger.error(`Unable to log in as ${username}, verify your credentials…`);
+    throw new Error(`Unable to log in as ${username}, verify your credentials…`);
   }
 
-  // A user may login with an e-mail address.  Resolve it to a username now.
+  // A user may log in with an e-mail address; resolve it to a username now.
   const communityURL: string | undefined = $("#login-welcome a").attr("href");
   logger.debug(`Community URL: ${communityURL}`);
   if (!communityURL) {
     logger.error("Could not find the community URL.");
     throw new Error("Could not find the community URL.");
   }
+
   const match = communityURL.match(USERNAME_RE);
   if (!match?.groups?.username) {
     logger.error(`Unable to resolve username from ${communityURL}`);
     throw new Error(`Unable to resolve username from ${communityURL}`);
   }
+
   const loggedInUsername = match.groups.username;
   logger.info(`Successfully logged in as: ${loggedInUsername}`);
 
   // The site preserves case, but this will break our use in the LICENSE_URL
   return loggedInUsername.toLowerCase();
 }
+
 
 /**
  * main - Parse command line args, setup logging, do work.
