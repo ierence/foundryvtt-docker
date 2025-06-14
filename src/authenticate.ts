@@ -56,16 +56,29 @@ const HEADERS: Headers = new Headers({
  * @return {string}  CSRF middleware token extracted from the login form.
  */
 async function fetchTokens() {
-  // Make a request to the main site to get our two CSRF tokens
   logger.info(`Requesting CSRF tokens from ${BASE_URL}`);
   logger.debug(`Fetching: ${BASE_URL}`);
-  const response = await fetch(BASE_URL, {
-    method: "GET",
-    headers: HEADERS,
-  });
+
+  // ── 60-second timeout ────────────────────────────────────────────────
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60_000);
+  // ─────────────────────────────────────────────────────────────────────
+
+  let response: Response;
+  try {
+    response = await fetch(BASE_URL, {
+      method: "GET",
+      headers: HEADERS,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId); // always clear the timer
+  }
+
   if (!response.ok) {
     throw new Error(`Unexpected response ${response.statusText}`);
   }
+
   const body = await response.text();
   const $ = await cheerio.load(body);
 
@@ -151,10 +164,8 @@ async function login(
   const loggedInUsername = match.groups.username;
   logger.info(`Successfully logged in as: ${loggedInUsername}`);
 
-  // The site preserves case, but this will break our use in the LICENSE_URL
   return loggedInUsername.toLowerCase();
 }
-
 
 /**
  * main - Parse command line args, setup logging, do work.
@@ -162,36 +173,28 @@ async function login(
  * @return {number}  exit code
  */
 async function main(): Promise<number> {
-  // Parse command line options.
   const options = docopt.docopt(doc, { version: "1.0.0" });
 
-  // Extract values from CLI options.
   const cookiejar_filename = options["<cookiejar>"];
   const log_level = options["--log-level"].toLowerCase();
   HEADERS.set("User-Agent", options["--user-agent"]);
   const password = options["<password>"];
   const username = options["<username>"].toLowerCase();
 
-  // Setup logging.
   logger = createLogger("Authenticate", log_level);
 
-  // Setup global cookie jar, storage, and fetch library
   logger.debug(`Saving cookies to: ${cookiejar_filename}`);
   cookieJar = new CookieJar(new FileCookieStore(cookiejar_filename));
   fetch = fetchCookie(nodeFetch, cookieJar);
 
   try {
-    // Get the tokens and cookies we'll need to login.
     const csrfmiddlewaretoken = await fetchTokens();
-
-    // Login using the credentials, tokens, and cookies.
     const loggedInUsername = await login(
       csrfmiddlewaretoken,
       username,
       password,
     );
 
-    // Store the username in a cookie for use by other utilities
     const username_cookie = Cookie.parse(
       `username=${loggedInUsername}; Domain=${LOCAL_DOMAIN}; Path=/`,
     );
