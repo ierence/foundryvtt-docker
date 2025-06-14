@@ -33,14 +33,14 @@ import nodeFetch, { Headers } from "node-fetch";
 import process from "process";
 
 // Setup globals, to be configured in main()
-var cookieJar: CookieJar;
-var fetch: typeof nodeFetch;
-var logger: winston.Logger;
+let cookieJar: CookieJar;
+let fetch: typeof nodeFetch;
+let logger: winston.Logger;
 
 // Constants
 const BASE_URL = "https://foundryvtt.com";
 const LOCAL_DOMAIN = "felddy.com";
-const LOGIN_URL = BASE_URL + "/auth/login/";
+const LOGIN_URL = `${BASE_URL}/auth/login/`;
 const USERNAME_RE = /\/community\/(?<username>.+)/;
 
 const HEADERS: Headers = new Headers({
@@ -52,161 +52,113 @@ const HEADERS: Headers = new Headers({
 
 /**
  * fetchTokens - Fetch the CSRF form and cookie tokens.
- *
- * @return {string}  CSRF middleware token extracted from the login form.
+ * @return {Promise<string>} CSRF token extracted from the login form.
  */
-async function fetchTokens() {
+async function fetchTokens(): Promise<string> {
   logger.info(`Requesting CSRF tokens from ${BASE_URL}`);
   logger.debug(`Fetching: ${BASE_URL}`);
 
-  // ── 60-second timeout ────────────────────────────────────────────────
+  // 60-second timeout
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 60_000);
-  // ─────────────────────────────────────────────────────────────────────
 
-  let response: Response;
   try {
-    response = await fetch(BASE_URL, {
+    const response = await fetch(BASE_URL, {
       method: "GET",
       headers: HEADERS,
       signal: controller.signal,
     });
+    if (!response.ok) {
+      throw new Error(`Unexpected response ${response.statusText}`);
+    }
+    const body = await response.text();
+    const $ = cheerio.load(body);
+    const token = $('input[name="csrfmiddlewaretoken"]').val();
+    if (!token) {
+      logger.error("Could not find the CSRF middleware token.");
+      throw new Error("Missing CSRF token");
+    }
+    return token as string;
   } finally {
-    clearTimeout(timeoutId); // always clear the timer
+    clearTimeout(timeoutId);
   }
-
-  if (!response.ok) {
-    throw new Error(`Unexpected response ${response.statusText}`);
-  }
-
-  const body = await response.text();
-  const $ = await cheerio.load(body);
-
-  const csrfmiddlewaretoken: string | string[] | undefined = $(
-    'input[name ="csrfmiddlewaretoken"]',
-  ).val();
-  if (typeof csrfmiddlewaretoken == "undefined") {
-    logger.error("Could not find the CSRF middleware token.");
-    throw new Error("Could not find the CSRF middleware token.");
-  }
-  return csrfmiddlewaretoken;
 }
 
 /**
- * login - Login to site, and get a session cookie, and actual username.
- *
- * @param  {string} csrfmiddlewaretoken CSRF middleware token extracted from form.
- * @param  {string} username            Username or e-mail address of user.
- * @param  {string} password            Password associated with the username.
- * @return {string}                     The actual username of the account.
+ * login - Authenticate and retrieve the session username.
  */
 async function login(
   csrfmiddlewaretoken: string,
   username: string,
-  password: string,
+  password: string
 ): Promise<string> {
-  const form_params = new URLSearchParams({
+  const form = new URLSearchParams({
     csrfmiddlewaretoken,
     next: "/",
-    password,
     username,
+    password,
   });
 
-  logger.info(`Logging in as: ${username}`);
-  logger.debug(`Fetching: ${LOGIN_URL}`);
-
-  // ── 60-second timeout ────────────────────────────────────────────────
+  logger.info(`Logging in as ${username}`);
+  logger.debug(`Posting to: ${LOGIN_URL}`);
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 60_000);
-  // ─────────────────────────────────────────────────────────────────────
 
-  let response: Response;
   try {
-    response = await fetch(LOGIN_URL, {
-      body: form_params,
+    const response = await fetch(LOGIN_URL, {
       method: "POST",
       headers: HEADERS,
+      body: form,
       signal: controller.signal,
     });
+    if (!response.ok) {
+      throw new Error(`Login failed: ${response.statusText}`);
+    }
+    const html = await response.text();
+    const $ = cheerio.load(html);
+
+    const cookies = cookieJar.getCookiesSync(BASE_URL);
+    if (!cookies.find(c => c.key === "sessionid")) {
+      throw new Error("No session cookie - invalid credentials?");
+    }
+
+    const communityURL = $("#login-welcome a").attr("href");
+    if (!communityURL) {
+      throw new Error("Could not locate community URL after login");
+    }
+    const match = communityURL.match(USERNAME_RE);
+    if (!match?.groups?.username) {
+      throw new Error(`Unable to parse username from ${communityURL}`);
+    }
+    return match.groups.username.toLowerCase();
   } finally {
-    clearTimeout(timeoutId); // always clear the timer
+    clearTimeout(timeoutId);
   }
-
-  if (!response.ok) {
-    throw new Error(`Unexpected response ${response.statusText}`);
-  }
-
-  const body = await response.text();
-  const $ = cheerio.load(body);
-
-  // Check to see if we have a sessionid (logged in)
-  const cookies = cookieJar.getCookiesSync(BASE_URL);
-  const session_cookie = cookies.find((cookie) => cookie.key === "sessionid");
-  if (!session_cookie) {
-    logger.error(`Unable to log in as ${username}, verify your credentials…`);
-    throw new Error(`Unable to log in as ${username}, verify your credentials…`);
-  }
-
-  // A user may log in with an e-mail address; resolve it to a username now.
-  const communityURL: string | undefined = $("#login-welcome a").attr("href");
-  logger.debug(`Community URL: ${communityURL}`);
-  if (!communityURL) {
-    logger.error("Could not find the community URL.");
-    throw new Error("Could not find the community URL.");
-  }
-
-  const match = communityURL.match(USERNAME_RE);
-  if (!match?.groups?.username) {
-    logger.error(`Unable to resolve username from ${communityURL}`);
-    throw new Error(`Unable to resolve username from ${communityURL}`);
-  }
-
-  const loggedInUsername = match.groups.username;
-  logger.info(`Successfully logged in as: ${loggedInUsername}`);
-
-  return loggedInUsername.toLowerCase();
 }
 
-/**
- * main - Parse command line args, setup logging, do work.
- *
- * @return {number}  exit code
- */
 async function main(): Promise<number> {
   const options = docopt.docopt(doc, { version: "1.0.0" });
-
-  const cookiejar_filename = options["<cookiejar>"];
-  const log_level = options["--log-level"].toLowerCase();
+  const [user, passw, jar] = [
+    options["<username>"],
+    options["<password>"],
+    options["<cookiejar>"],
+  ];
   HEADERS.set("User-Agent", options["--user-agent"]);
-  const password = options["<password>"];
-  const username = options["<username>"].toLowerCase();
+  logger = createLogger("Authenticate", options["--log-level"].toLowerCase());
 
-  logger = createLogger("Authenticate", log_level);
-
-  logger.debug(`Saving cookies to: ${cookiejar_filename}`);
-  cookieJar = new CookieJar(new FileCookieStore(cookiejar_filename));
+  cookieJar = new CookieJar(new FileCookieStore(jar));
   fetch = fetchCookie(nodeFetch, cookieJar);
 
   try {
-    const csrfmiddlewaretoken = await fetchTokens();
-    const loggedInUsername = await login(
-      csrfmiddlewaretoken,
-      username,
-      password,
-    );
-
-    const username_cookie = Cookie.parse(
-      `username=${loggedInUsername}; Domain=${LOCAL_DOMAIN}; Path=/`,
-    );
-    cookieJar.setCookieSync(
-      username_cookie!.toString(),
-      `http://${LOCAL_DOMAIN}`,
-    );
+    const token = await fetchTokens();
+    const actualUser = await login(token, user.toLowerCase(), passw);
+    const cookie = Cookie.parse(`username=${actualUser}; Domain=${LOCAL_DOMAIN}; Path=/`)!;
+    cookieJar.setCookieSync(cookie.toString(), `http://${LOCAL_DOMAIN}`);
+    return 0;
   } catch (err: any) {
-    logger.error(`Unable to authenticate: ${err.message}`);
-    return -1;
+    logger.error(`Authentication error: ${err.message}`);
+    return 1;
   }
-  return 0;
 }
 
 (async () => {
