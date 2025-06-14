@@ -32,7 +32,7 @@ import fetchCookie from "fetch-cookie";
 import nodeFetch, { Headers } from "node-fetch";
 import process from "process";
 
-// Setup globals, to be configured in main()
+// Setup globals
 let cookieJar: CookieJar;
 let fetch: typeof nodeFetch;
 let logger: winston.Logger;
@@ -58,15 +58,19 @@ async function fetchTokens(): Promise<string> {
   logger.info(`Requesting CSRF tokens from ${BASE_URL}`);
   logger.debug(`Fetching: ${BASE_URL}`);
 
-  // 60-second timeout
+  // Setup abort and timeout
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 60_000);
+  const timeoutMs = 120_000;
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(BASE_URL, {
       method: "GET",
       headers: HEADERS,
       signal: controller.signal,
+      // Explicit timeout for node-fetch v2
+      // If using v3, AbortController will handle it
+      timeout: timeoutMs,
     });
     if (!response.ok) {
       throw new Error(`Unexpected response ${response.statusText}`);
@@ -102,7 +106,8 @@ async function login(
   logger.info(`Logging in as ${username}`);
   logger.debug(`Posting to: ${LOGIN_URL}`);
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 60_000);
+  const timeoutMs = 120_000;
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(LOGIN_URL, {
@@ -110,6 +115,7 @@ async function login(
       headers: HEADERS,
       body: form,
       signal: controller.signal,
+      timeout: timeoutMs,
     });
     if (!response.ok) {
       throw new Error(`Login failed: ${response.statusText}`);
