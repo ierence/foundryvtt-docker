@@ -68,9 +68,6 @@ async function fetchTokens(): Promise<string> {
       method: "GET",
       headers: HEADERS,
       signal: controller.signal,
-      // Explicit timeout for node-fetch v2
-      // If using v3, AbortController will handle it
-      timeout: timeoutMs,
     });
     if (!response.ok) {
       throw new Error(`Unexpected response ${response.statusText}`);
@@ -115,7 +112,6 @@ async function login(
       headers: HEADERS,
       body: form,
       signal: controller.signal,
-      timeout: timeoutMs,
     });
     if (!response.ok) {
       throw new Error(`Login failed: ${response.statusText}`);
