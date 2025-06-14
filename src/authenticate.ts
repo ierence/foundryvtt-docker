@@ -29,7 +29,7 @@ import createLogger from "./logging.js";
 import winston from "winston";
 import docopt from "docopt";
 import fetchCookie from "fetch-cookie";
-import nodeFetch, { Headers } from "node-fetch";
+import nodeFetch, { Headers, Response } from "node-fetch";
 import process from "process";
 
 // Globals
@@ -51,19 +51,19 @@ const HEADERS: Headers = new Headers({
 });
 
 /**
- * fetchWithTimeout - Wraps fetch in a manual timeout.
+ * fetchWithTimeout - Wraps fetch in a manual timeout, always returns a Response.
  */
 async function fetchWithTimeout(
   input: string,
   init: Parameters<typeof nodeFetch>[1],
   timeoutMs: number
-) {
+): Promise<Response> {
   return Promise.race([
     fetch(input, init),
-    new Promise((_, reject) =>
+    new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error(`Fetch timeout after ${timeoutMs}ms`)), timeoutMs)
     ),
-  ]);
+  ]) as Promise<Response>;
 }
 
 /**
